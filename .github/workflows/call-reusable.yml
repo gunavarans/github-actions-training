@@ -1,0 +1,11 @@
+name: Call Reusable Lint
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  docs:
+    uses: cropandsoil/github-actions-training/.github/workflows/reusable-lint.yml@main
+    with:
+      globs: "**/*.md"
+

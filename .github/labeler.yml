@@ -1,0 +1,12 @@
+# Label pull requests based on changed files or paths
+docs:
+  - "**/*.md"
+workflows:
+  - ".github/workflows/**"
+python:
+  - "**/*.py"
+node:
+  - "package.json"
+  - "package-lock.json"
+  - "**/*.js"
+

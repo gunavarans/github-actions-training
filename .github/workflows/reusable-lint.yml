@@ -1,0 +1,19 @@
+name: Reusable Markdown Lint
+on:
+  workflow_call:
+    inputs:
+      globs:
+        type: string
+        required: false
+        default: "**/*.md"
+permissions:
+  contents: read
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DavidAnson/markdownlint-cli2-action@v18
+        with:
+          globs: ${{ inputs.globs }}
+
