@@ -1,0 +1,216 @@
+name: adr-policy-check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  adr-policy-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute PR diff (decisions/)
+        id: diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_REF="${{ github.base_ref }}"
+          if [[ -z "$BASE_REF" ]]; then
+            BASE_REF="$(git rev-parse origin/HEAD)"
+          fi
+          git fetch origin "$BASE_REF":"refs/remotes/origin/$BASE_REF"
+
+          # Capture added/copied/modified/renamed/deleted for decisions dir
+          git diff --name-status "origin/$BASE_REF"...HEAD | awk '$2 ~ /^docs\/decisions\//' > changes.tsv || true
+          echo "Detected changes under docs/decisions/:"
+          cat changes.tsv || true
+
+      - name: Enforce ADR policy
+        shell: bash
+        run: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          has_violations=false
+
+          # Helper functions
+          in_year_dir() { [[ "$1" =~ ^docs/decisions/20[0-9]{2}/ ]]; }
+          is_markdown() { [[ "$1" == *.md ]]; }
+          is_template() { [[ "$1" == docs/decisions/adr-0000-template.md ]]; }
+
+          err() { echo "::error file=$1,line=$2::$3"; has_violations=true; }
+
+          # Strict conformance checks (only when new Status is NOT Proposed)
+          strict_checks() {
+            local f="$1"
+            local base year_dir adr_num title_line status_line date_line title_num date_value date_year
+
+            # (A) must be under year directory and markdown
+            if ! in_year_dir "$f"; then
+              err "$f" 1 "ADR must be under docs/decisions/20YY/."
+            fi
+            if ! is_markdown "$f"; then
+              err "$f" 1 "ADR must be a Markdown file (*.md)."
+            fi
+
+            # (B) filename pattern
+            base="$(basename "$f")"
+            if ! [[ "$base" =~ ^adr-[0-9]{4}-[a-z0-9-]+\.md$ ]]; then
+              err "$f" 1 "Filename must match: adr-####-kebab-case.md (lowercase)."
+            fi
+
+            # (C) extract year dir and adr number
+            year_dir="$(awk -F'/' '{print $3}' <<< "$f")"
+            adr_num="${base#adr-}"; adr_num="${adr_num%%-*}"
+
+            # (D) header lines
+            title_line="$(grep -m1 '^# ADR [0-9]\{4\}:' "$f" || true)"
+            status_line="$(grep -m1 '^- \*\*Status:\*\*' "$f" || true)"
+            date_line="$(grep -m1 '^- \*\*Date:\*\* ' "$f" || true)"
+
+            if [[ -z $title_line ]]; then
+              err "$f" 1 "Missing title line '# ADR NNNN: <title>'."
+            else
+              title_num="$(sed -E 's/^# ADR ([0-9]{4}):.*/\1/' <<< "$title_line")"
+              if [[ $title_num != $adr_num ]]; then
+                err "$f" 1 "ADR number in title ($title_num) does not match filename ($adr_num)."
+              fi
+            fi
+
+            if [[ -z $status_line ]]; then
+              err "$f" 1 "Missing required line starting with '- **Status:** '."
+            fi
+
+            if [[ -z $date_line ]]; then
+              err "$f" 1 "Missing required line starting with '- **Date:** YYYY-MM-DD'."
+            else
+              date_value="$(sed -E 's/^- \*\*Date:\*\* *//' <<< "$date_line")"
+              if ! [[ "$date_value" =~ ^20[0-9]{2}-[01][0-9]-[0-3][0-9]$ ]]; then
+                err "$f" 1 "Date must be in YYYY-MM-DD format. Found '$date_value'."
+              else
+                date_year="${date_value%%-*}"
+                if [[ $date_year != $year_dir ]]; then
+                  err "$f" 1 "Year folder ($year_dir) must match Date year ($date_year)."
+                fi
+              fi
+            fi
+          }
+
+            # Establish BASE_REF for this step (avoid mixing YAML exprs in shell)
+            BASE_REF="${{ github.base_ref }}"
+          if [[ -z "$BASE_REF" ]]; then
+            BASE_REF="$(git rev-parse origin/HEAD)"
+          fi
+
+          # Iterate over changed files under docs/decisions
+          while IFS=$'\t' read -r code p1 p2; do
+            [[ -z ${code:-} ]] && continue
+
+            # Consider only entries where either side is under docs/decisions
+            if [[ $p1 != docs/decisions/* && $p2 != docs/decisions/* ]]; then
+              continue
+            fi
+
+            old_path=
+            new_path=
+            is_new=false
+
+            case "$code" in
+              D)  err "$p1" 1 "Deletions under docs/decisions are not allowed."; continue;;
+              A)  old_path="$p1"; new_path="$p1"; is_new=true;;  # Added; old_path may not exist in base
+              M)  old_path="$p1"; new_path="$p1" ;;              # Modified
+              R*) old_path="$p1"; new_path="$p2";;               # Renamed: p1 = old name, p2 = new name
+              C*) old_path="$p1"; new_path="$p2"; is_new=true;;  # Copied: p1 = source file, p2 = new file
+              *)  continue;;                                     # Unknown code; skip
+            esac
+
+            # New content must include a Status line (Rule 1)
+            if [[ -n $new_path && -f $new_path ]]; then
+              if ! grep -qm1 '^- \*\*Status:\*\*' "$new_path"; then
+                err "$new_path" 1 "Missing '- **Status:**' line."
+                continue
+              fi
+            fi
+
+            # If this is a new file, Status must contain Proposed (Rule 2)
+            if $is_new; then
+              if grep -qm1 '^- \*\*Status:\*\*: .*Proposed' "$new_path"; then
+                echo "OK (new, Proposed): $new_path"
+              else
+                err "$new_path" 1 "New ADR must have Status containing 'Proposed'."
+              fi
+              continue
+            fi
+
+            # For M/R/C (non-new after copy), compare OLD (from base) vs NEW
+            tmp_old="$(mktemp)"; tmp_new="$(mktemp)"
+
+            if git cat-file -e "origin/$BASE_REF:$old_path" 2>/dev/null; then
+              git show "origin/$BASE_REF:$old_path" > "$tmp_old"
+            else
+              : > "$tmp_old"   # empty -> treated as 'new' by logic below
+            fi
+
+            cat "$new_path" > "$tmp_new"
+
+            # If old content is unavailable (edge case), treat as new
+            if ! [[ -s $tmp_old ]]; then
+              if grep -qm1 '^- \*\*Status:\*\*: .*Proposed' "$new_path"; then
+                echo "OK (treated as new, Proposed): $new_path"
+              else
+                err "$new_path" 1 "New ADR must have Status containing 'Proposed'."
+              fi
+              rm -f "$tmp_old" "$tmp_new"
+              continue
+            fi
+
+            # Extract OLD/NEW Status lines
+            old_status_line="$(grep -m1 '^- \*\*Status:\*\*' "$tmp_old" || true)"
+            new_status_line="$(grep -m1 '^- \*\*Status:\*\*' "$tmp_new" || true)"
+
+            old_has_proposed=false
+            if [[ -n "$old_status_line" && "$old_status_line" =~ Proposed ]]; then
+              old_has_proposed=1
+            fi
+
+            new_has_proposed=false
+            if [[ -n $new_status_line && $new_status_line =~ Proposed ]]; then
+              new_has_proposed=true
+            fi
+
+            # If OLD did not contain Proposed, any content change fails (Rule 4)
+            if $old_has_proposed; then
+              if ! git diff --no-index --quiet "$tmp_old" "$tmp_new"; then
+                err "$new_path" 1 "Edits to non-Proposed ADRs are not allowed."
+                rm -f "$tmp_old" "$tmp_new"
+                continue
+              else
+                echo "OK (no content change): $new_path"
+                rm -f "$tmp_old" "$tmp_new"
+                continue
+              fi
+            fi
+
+            # If NEW contains Proposed, pass with no further checks (Rule 5)
+            if $new_has_proposed; then
+              echo "OK (modified, remains Proposed): $new_path"
+              rm -f "$tmp_old" "$tmp_new"
+              continue
+            fi
+
+            # NEW does not contain Proposed -> run strict conformance checks (Rule 6)
+            strict_checks "$new_path"
+
+            rm -f "$tmp_old" "$tmp_new"
+          done < changes.tsv
+
+          if $has_violations; then
+            echo "ADR policy violations detected."
+            exit 1
+          fi
+
+          echo "ADR policy check passed."
