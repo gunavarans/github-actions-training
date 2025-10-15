@@ -1,0 +1,13 @@
+name: Hello Workflow
+on:
+  push:
+    branches: [ main ]
+jobs:
+  hello:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Say hello
+        run: echo "Hello from GitHub Actions. Commit SHA: $GITHUB_SHA"
+
