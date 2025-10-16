@@ -9,5 +9,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Say hello
-        run: echo "Hello from GitHub Actions. Commit SHA: $GITHUB_SHA"
+        run: |
+          echo "Hello from GitHub Actions. Commit SHA: ${{ github.sha }}"
 
