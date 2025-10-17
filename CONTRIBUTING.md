@@ -7,7 +7,7 @@ Thanks for improving this training repository. The goal is simple: examples that
 ## How to propose a change
 1. Fork the repo and create a branch.
 2. Keep examples small and beginner friendly.
-3. Open a pull request that explains what the student will 
+3. Open a pull request that explains what the student will learn2.
 
 ## Style
 - One purpose per workflow. Prefer short names and clear comments.
